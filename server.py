@@ -1,9 +1,10 @@
 import time
 import logging
+import uuid as uuid_lib
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 from graph import rcm_graph
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -129,3 +130,64 @@ def process_claim_stream(req: ClaimRequest):
             yield json.dumps({"node": node_name, "state": node_state}) + "\n"
 
     return StreamingResponse(generate(), media_type="application/x-ndjson")
+
+
+# ── OpenAI-compatible endpoint ────────────────────────────────────────────────
+# Accepts clinical notes as the message content.
+# Format: "CLAIM_ID: C001 | PATIENT: P123 | NPI: 1234567890 | DATE: 2024-01-15 | NOTES: <clinical notes>"
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+class ChatRequest(BaseModel):
+    model: Optional[str] = "rcm-claims-agent"
+    messages: List[ChatMessage]
+
+@app.post("/v1/chat/completions")
+def chat_completions(body: ChatRequest):
+    content = body.messages[-1].content
+    start = time.time()
+
+    # Parse structured input or use defaults for demo
+    import re
+    claim_id   = re.search(r"CLAIM_ID:\s*(\S+)", content)
+    patient_id = re.search(r"PATIENT:\s*(\S+)", content)
+    npi        = re.search(r"NPI:\s*(\S+)", content)
+    date       = re.search(r"DATE:\s*(\S+)", content)
+
+    initial_state = {
+        "claim_id":        claim_id.group(1) if claim_id else f"C-{uuid_lib.uuid4().hex[:6]}",
+        "clinical_notes":  content,
+        "patient_id":      patient_id.group(1) if patient_id else "P-DEMO",
+        "provider_npi":    npi.group(1) if npi else "1234567890",
+        "service_date":    date.group(1) if date else "2024-01-15",
+        "denial_reason_code": None,
+        "validation_errors": [], "is_valid": None,
+        "suggested_icd10_codes": [], "suggested_cpt_codes": [], "coding_confidence": "",
+        "denial_explanation": "", "appeal_recommended": False, "correction_steps": [],
+        "next_agent": "", "iteration": 0, "recommendation": "", "summary": ""
+    }
+
+    final_state = rcm_graph.invoke(initial_state)
+    answer = f"**Recommendation: {final_state['recommendation']}**\n\n{final_state['summary']}"
+    if final_state.get("suggested_icd10_codes"):
+        answer += f"\n\nICD-10: {', '.join(final_state['suggested_icd10_codes'])}"
+        answer += f"\nCPT: {', '.join(final_state['suggested_cpt_codes'])}"
+        answer += f"\nCoding Confidence: {final_state['coding_confidence']}"
+
+    duration = round((time.time() - start) * 1000)
+    logging.info(f"openai-compat claim={initial_state['claim_id']} recommendation={final_state['recommendation']} duration={duration}ms")
+    return {
+        "id": f"chatcmpl-{uuid_lib.uuid4().hex[:8]}",
+        "object": "chat.completion",
+        "model": "rcm-claims-agent",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": answer},
+            "finish_reason": "stop"
+        }]
+    }
+
+@app.get("/v1/models")
+def list_models():
+    return {"data": [{"id": "rcm-claims-agent", "object": "model"}]}

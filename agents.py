@@ -146,9 +146,10 @@ def supervisor(state: ClaimState) -> ClaimState:
     Routing logic:
     1. Always validate first
     2. If invalid → END (can't process invalid claim)
-    3. If valid and no codes → billing_coder
-    4. If denial_reason_code present and no analysis → denial_analyzer
-    5. Otherwise → END (generate final recommendation)
+    3. If valid and PHI not masked → pii_masker (before LLM sees clinical_notes)
+    4. If valid, masked, and no codes → billing_coder
+    5. If denial_reason_code present and no analysis → denial_analyzer
+    6. Otherwise → END (generate final recommendation)
     """
     iteration = state.get("iteration", 0)
 
@@ -164,7 +165,11 @@ def supervisor(state: ClaimState) -> ClaimState:
     if not state.get("is_valid"):
         return {**state, "next_agent": "END", "iteration": iteration + 1}
 
-    # Step 3: valid but not coded yet
+    # Step 3: valid but PII not masked yet — mask before LLM sees clinical_notes
+    if not state.get("pii_mapping"):
+        return {**state, "next_agent": "pii_masker", "iteration": iteration + 1}
+
+    # Step 4: valid, masked, but not coded yet
     if not state.get("suggested_icd10_codes"):
         return {**state, "next_agent": "billing_coder", "iteration": iteration + 1}
 

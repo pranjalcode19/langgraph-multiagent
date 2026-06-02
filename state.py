@@ -32,6 +32,9 @@ class ClaimState(TypedDict):
     appeal_recommended: bool
     correction_steps: list[str]
 
+    # Filled by pii_masker — PHI protection before LLM sees clinical_notes
+    pii_mapping: dict            # token → original value (for de-tokenization)
+
     # Filled by supervisor — controls routing
     next_agent: str              # which agent to call next
     iteration: int               # prevent infinite loops

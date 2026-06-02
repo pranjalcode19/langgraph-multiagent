@@ -3,6 +3,7 @@ LangGraph state machine for RCM claim processing.
 
 Graph structure:
   START → supervisor → claims_validator → supervisor
+                    → pii_masker       → supervisor   (masks PHI before LLM)
                     → billing_coder    → supervisor
                     → denial_analyzer  → supervisor
                     → END → generate_recommendation
@@ -18,6 +19,7 @@ Key LangGraph concepts:
 from langgraph.graph import StateGraph, END, START
 from state import ClaimState
 from agents import supervisor, claims_validator, billing_coder, denial_analyzer, generate_recommendation
+from pii_masker import pii_masker
 
 
 def route_from_supervisor(state: ClaimState) -> str:
@@ -34,6 +36,7 @@ def build_graph():
     # Add all nodes
     graph.add_node("supervisor", supervisor)
     graph.add_node("claims_validator", claims_validator)
+    graph.add_node("pii_masker", pii_masker)
     graph.add_node("billing_coder", billing_coder)
     graph.add_node("denial_analyzer", denial_analyzer)
     graph.add_node("generate_recommendation", generate_recommendation)
@@ -47,16 +50,18 @@ def build_graph():
         route_from_supervisor,
         {
             "claims_validator": "claims_validator",
-            "billing_coder": "billing_coder",
-            "denial_analyzer": "denial_analyzer",
-            "END": "generate_recommendation"   # before ending, generate recommendation
+            "pii_masker":       "pii_masker",
+            "billing_coder":    "billing_coder",
+            "denial_analyzer":  "denial_analyzer",
+            "END":              "generate_recommendation"
         }
     )
 
     # After each worker agent, return to supervisor for next decision
     graph.add_edge("claims_validator", "supervisor")
-    graph.add_edge("billing_coder", "supervisor")
-    graph.add_edge("denial_analyzer", "supervisor")
+    graph.add_edge("pii_masker",       "supervisor")   # supervisor routes to billing_coder next
+    graph.add_edge("billing_coder",    "supervisor")
+    graph.add_edge("denial_analyzer",  "supervisor")
 
     # generate_recommendation is always the terminal node
     graph.add_edge("generate_recommendation", END)
